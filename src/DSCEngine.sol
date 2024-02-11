@@ -28,7 +28,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__TransferFailed();
     error DSCEngine__MintFailed();
     error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
-    error DSCEngine__HealthFactorOK();
+    error DSCEngine__HealthFactorOk();
     error DSCEngine__HealthFactorNotImproved();
 
     //////////////////////
@@ -41,9 +41,9 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     // used to accurate reduce the amount of figures
     uint256 private constant PRECISION = 1e18;
-    uint256 private constant LIQUIDATION_TRESHOLD = 50; // means 200% overcollateralized
+    uint256 private constant LIQUIDATION_THRESHOLD = 50; // means 200% overcollateralized
     uint256 private constant LIQUIDATION_PRECISION = 100;
-    uint256 private constant MIN_HEALTH_FACTOR = 1;
+    uint256 private constant MIN_HEALTH_FACTOR = 1e18;
     uint256 private constant LIQUIDATION_BONUS = 10; //10% bonus to incentivized liquidation
     mapping(address token => address priceFeed) private s_priceFeeds;
     //track how much someone has deposited and of which token
@@ -110,7 +110,7 @@ contract DSCEngine is ReentrancyGuard {
     ) external {
         //combines depositCollateral and mintDSC, deposits and mints in one transaction
         depositCollateral(tokenCollateralAddress, amountCollateral);
-        mintDSC(amountDscToMint);
+        mintDsc(amountDscToMint);
     }
 
     function depositCollateral(address tokenCollateralAddress, uint256 amountCollateral)
@@ -133,13 +133,13 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function mintDSC(uint256 amountDscToMint) public moreThanZero(amountDscToMint) nonReentrant {
+    function mintDsc(uint256 amountDscToMint) public moreThanZero(amountDscToMint) nonReentrant {
         /* follows CEI, keeps track of how much is minted
         * after deposited collateral then mint
         * involving pricefeed, checking values 
         * collateral > dsc value 
         * taking in the amount they want to mint
-        * collateral must be more than minimum treshold
+        * collateral must be more than minimum threshold
         * one can not mint 0 Dsc
         */
         s_DSCMinted[msg.sender] += amountDscToMint;
@@ -183,7 +183,7 @@ contract DSCEngine is ReentrancyGuard {
         _revertIfHealthFactorIsBroken(msg.sender); //Patrick thinks it won't hit, because after there is less Dsc so the healthfactor should be better, question is if there would be a price drop in usd of the token and there are dsc tokens then maybe it could drop
     }
 
-    // protect for undercollaterilization treshold, remove to save DSC, activate near collateralization
+    // protect for undercollaterilization threshold, remove to save DSC, activate near collateralization
     // takes collateral address of the user that broke the health factor, debtTocover is amount of DSC tokens to improve
     // partial liquidation is possible, 200% overcollateralization, liquidators are incentivized.
     function liquidate(address collateralToken, address user, uint256 debtToCover)
@@ -194,7 +194,7 @@ contract DSCEngine is ReentrancyGuard {
         // checking healthfactor, assign to variable, if ok, then stop
         uint256 startingUserHealthFactor = _healthFactor(user);
         if (startingUserHealthFactor >= MIN_HEALTH_FACTOR) {
-            revert DSCEngine__HealthFactorOK();
+            revert DSCEngine__HealthFactorOk();
         }
         //burn debt
         uint256 tokenAmountFromDebtCovered = getTokenAmountFromUsd(collateralToken, debtToCover);
@@ -215,8 +215,12 @@ contract DSCEngine is ReentrancyGuard {
         _revertIfHealthFactorIsBroken(msg.sender);
     }
 
-    function getHealthFactor(address user) external view returns (uint256) {
-        return _healthFactor(user);
+    function calculateHealthFactor(uint256 totalDscMinted, uint256 collateralValueInUsd)
+        external
+        pure
+        returns (uint256)
+    {
+        return _calculateHealthFactor(totalDscMinted, collateralValueInUsd);
     }
 
     /////////////////////////////////////////////
@@ -229,27 +233,31 @@ contract DSCEngine is ReentrancyGuard {
     function _getAccountInformation(address user)
         private
         view
-        returns (uint256 totalDSCMinted, uint256 collateralValueInUSD)
+        returns (uint256 totalDscMinted, uint256 collateralValueInUSD)
     {
-        totalDSCMinted = s_DSCMinted[user]; //what happens if the user has not minted anything but deposited???
+        totalDscMinted = s_DSCMinted[user]; //what happens if the user has not minted anything but deposited???
         //get value in USD
         collateralValueInUSD = getAccountCollateralValueInUSD(user);
     }
 
+    function _healthFactor(address user) private view returns (uint256) {
+        (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+        return _calculateHealthFactor(totalDscMinted, collateralValueInUsd);
+    }
     //there is a bug here according to Patrick
-    function _healthFactor(address user) private view returns (uint256 healthFactor) {
+
+    function _calculateHealthFactor(uint256 totalDscMinted, uint256 collateralValueInUSD)
+        internal
+        pure
+        returns (uint256 healthFactor)
+    {
         //require(totalDSCMinted > 0, "Total DSC minted must be greater than zero"); //is the bug solved with a division by zero prevention?
 
-        (uint256 totalDSCMinted, uint256 collateralValueInUSD) = _getAccountInformation(user);
-        uint256 collateralAdjustedForTreshold = (collateralValueInUSD * LIQUIDATION_TRESHOLD) / LIQUIDATION_PRECISION;
-        if (totalDSCMinted == 0) {
-            // Return a default health factor value, 1? But I think can you call this info if the user is not in DSCMinted?
-            // type(uint256).max; is used in the written example
-            return 1;
-        } else {
-            uint256 userHealthFactor = ((collateralAdjustedForTreshold * PRECISION) / totalDSCMinted);
-            return userHealthFactor;
-        }
+        if (totalDscMinted == 0) return type(uint256).max;
+        // Return a default health factor value, 1? But I think can you call this info if the user is not in DSCMinted?
+        // type(uint256).max; is used in the written example
+        uint256 collateralAdjustedForThreshold = (collateralValueInUSD * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
     function _revertIfHealthFactorIsBroken(address user) internal view {
@@ -294,13 +302,13 @@ contract DSCEngine is ReentrancyGuard {
             address token = s_collateralTokens[i];
             uint256 amount = s_collateralDeposited[user][token];
 
-            totalCollateralValueInUSD += getUSDValue(token, amount);
+            totalCollateralValueInUSD += getUsdValue(token, amount);
         }
 
         return totalCollateralValueInUSD;
     }
 
-    function getUSDValue(address token, uint256 amount) public view returns (uint256) {
+    function getUsdValue(address token, uint256 amount) public view returns (uint256) {
         //uses chainlink, because they are simply the best in providing pricefeed data aggregated
         // first get the pricefeed of the token
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
@@ -322,5 +330,37 @@ contract DSCEngine is ReentrancyGuard {
         returns (uint256 totalDSCMinted, uint256 collateralValueInUSD)
     {
         (totalDSCMinted, collateralValueInUSD) = _getAccountInformation(user);
+    }
+
+    function getPrecision() external pure returns (uint256) {
+        return PRECISION;
+    }
+
+    function getAdditionalFeedPrecision() external pure returns (uint256) {
+        return ADDITIONAL_FEED_PRECISION;
+    }
+
+    function getLiquidationThreshold() external pure returns (uint256) {
+        return LIQUIDATION_THRESHOLD;
+    }
+
+    function getLiquidationBonus() external pure returns (uint256) {
+        return LIQUIDATION_BONUS;
+    }
+
+    function getLiquidationPrecision() external pure returns (uint256) {
+        return LIQUIDATION_PRECISION;
+    }
+
+    function getDsc() external view returns (address) {
+        return address(i_dsc);
+    }
+
+    function getHealthFactor(address user) external view returns (uint256) {
+        return _healthFactor(user);
+    }
+
+    function getMinHealthFactor() external pure returns (uint256) {
+        return MIN_HEALTH_FACTOR;
     }
 }
